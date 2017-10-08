@@ -1,6 +1,7 @@
 require 'checks'
 require 'open3'
 require 'dhcp_common/server'
+require 'ipaddr'
 
 module Proxy::DHCP::NativeMS
   class Provider < ::Proxy::DHCP::Server
@@ -77,8 +78,27 @@ module Proxy::DHCP::NativeMS
       if dhcpsapi.api_level == DhcpsApi::Server::DHCPS_WIN2008_API || dhcpsapi.api_level == DhcpsApi::Server::DHCPS_NONE
         raise Proxy::DHCP::NotImplemented.new("DhcpsApi::Server#get_free_ip_address is not available on Windows Server 2008 and earlier versions.")
       end
-
-      return dhcpsapi.get_free_ip_address(subnet_address, from_address, to_address).first
+      
+      logger.debug "Searching for free IP in subnet #{subnet_address}"
+      while true
+        ip = dhcpsapi.get_free_ip_address(subnet_address, from_address, to_address).first
+        if ip.nil? || ip.empty?
+          logger.warn "No free IP returned by DHCP for subnet #{subnet_address}"
+          return nil
+        end
+        if system("ping -n 1 -w 1000 #{ip} > NUL")
+          logger.debug "Found a pingable IP address which does not have a DHCP record: #{ip}"
+        else
+          logger.info "Found free IP #{ip}"
+          return ip
+        end
+        break if ip == to_address
+        found_ip = IPAddr.new(ip, Socket::AF_INET)
+        next_ip = IPAddr.new(found_ip.to_i + 1, Socket::AF_INET)
+        from_address = next_ip.to_s
+      end
+      logger.warn "All IPs returned by the DHCP are already in use"
+      return nil
     end
 
     def retrieve_subnet_from_server(subnet_address)
