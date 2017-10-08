@@ -1,6 +1,7 @@
 require 'checks'
 require 'open3'
 require 'dhcp_common/server'
+require 'ipaddr'
 
 module Proxy::DHCP::NativeMS
   class Provider < ::Proxy::DHCP::Server
@@ -92,24 +93,26 @@ module Proxy::DHCP::NativeMS
       if dhcpsapi.api_level == DhcpsApi::Server::DHCPS_WIN2008_API || dhcpsapi.api_level == DhcpsApi::Server::DHCPS_NONE
         raise Proxy::DHCP::NotImplemented.new("DhcpsApi::Server#get_free_ip_address is not available on Windows Server 2008 and earlier versions.")
       end
-
-      max_free_ips = 10
-      free_ips = dhcpsapi.get_free_ip_address(subnet_address, from_address, to_address, max_free_ips)
-      if free_ips.empty?
-        logger.warn "No free IPs returned by DHCP for subnet #{subnet_address} from #{from_address} to #{to_address}"
-        return nil
-      end
-      logger.debug "DHCP returned #{free_ips.size} free IPs (max: #{max_free_ips})"
-      free_ips.each do |ip|
-        logger.debug "Searching for free IP - pinging #{ip}"
+      
+      logger.debug "Searching for free IP in subnet #{subnet_address}"
+      while true
+        ip = dhcpsapi.get_free_ip_address(subnet_address, from_address, to_address).first
+        if ip.empty?
+          logger.warn "No free IP returned by DHCP for subnet #{subnet_address}"
+          return nil
+        end
         if icmp_pingable?(ip)
           logger.debug "Found a pingable IP address which does not have a DHCP record: #{ip}"
         else
           logger.info "Found free IP #{ip}"
           return ip
         end
+        found_ip = IPAddr.new(ip, Socket::AF_INET)
+        next_ip = IPAddr.new(found_ip.to_i + 1, Socket::AF_INET)
+        from_address = next_ip.to_s
+        break if from_address == to_address
       end
-      logger.warn "All #{free_ips.size} IPs returned by the DHCP are already in use"
+      logger.warn "All IPs returned by the DHCP are already in use"
       return nil
     end
 
