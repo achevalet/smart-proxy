@@ -70,6 +70,21 @@ module Proxy::DHCP::NativeMS
       end
     end
 
+    def icmp_pingable? ip
+      # Always shell to ping, instead of using net-ping
+    if PLATFORM =~ /mingw/
+      # Windows uses different options for ping and does not have /dev/null
+      system("ping -n 1 -w 1000 #{ip} > NUL")
+    else
+      # Default to Linux ping options and send to /dev/null
+      system("ping -c 1 -W 1 #{ip} > /dev/null")
+    end
+    rescue => err
+      # We failed to check this address so we should not use it
+      logger.warn "Unable to icmp ping #{ip} because #{err.inspect}. Skipping this address..."
+      true
+    end
+
     def unused_ip(subnet_address, mac_address, from_address, to_address)
       client = dhcpsapi.get_client_by_mac_address(subnet_address, mac_address) rescue nil
       return client[:client_ip_address] unless client.nil?
@@ -78,7 +93,24 @@ module Proxy::DHCP::NativeMS
         raise Proxy::DHCP::NotImplemented.new("DhcpsApi::Server#get_free_ip_address is not available on Windows Server 2008 and earlier versions.")
       end
 
-      return dhcpsapi.get_free_ip_address(subnet_address, from_address, to_address).first
+      max_free_ips = 10
+      free_ips = dhcpsapi.get_free_ip_address(subnet_address, from_address, to_address, max_free_ips)
+      if free_ips.empty?
+        logger.warn "No free IPs returned by DHCP for subnet #{subnet_address} from #{from_address} to #{to_address}"
+        return nil
+      end
+      logger.debug "DHCP returned #{free_ips.size} free IPs (max: #{max_free_ips})"
+      free_ips.each do |ip|
+        logger.debug "Searching for free IP - pinging #{ip}"
+        if icmp_pingable?(ip)
+          logger.debug "Found a pingable IP address which does not have a DHCP record: #{ip}"
+        else
+          logger.info "Found free IP #{ip}"
+          return ip
+        end
+      end
+      logger.warn "All #{free_ips.size} IPs returned by the DHCP are already in use"
+      return nil
     end
 
     def retrieve_subnet_from_server(subnet_address)
