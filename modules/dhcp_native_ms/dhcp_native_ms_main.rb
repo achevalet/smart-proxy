@@ -71,21 +71,6 @@ module Proxy::DHCP::NativeMS
       end
     end
 
-    def icmp_pingable? ip
-      # Always shell to ping, instead of using net-ping
-    if PLATFORM =~ /mingw/
-      # Windows uses different options for ping and does not have /dev/null
-      system("ping -n 1 -w 1000 #{ip} > NUL")
-    else
-      # Default to Linux ping options and send to /dev/null
-      system("ping -c 1 -W 1 #{ip} > /dev/null")
-    end
-    rescue => err
-      # We failed to check this address so we should not use it
-      logger.warn "Unable to icmp ping #{ip} because #{err.inspect}. Skipping this address..."
-      true
-    end
-
     def unused_ip(subnet_address, mac_address, from_address, to_address)
       client = dhcpsapi.get_client_by_mac_address(subnet_address, mac_address) rescue nil
       return client[:client_ip_address] unless client.nil?
@@ -93,24 +78,59 @@ module Proxy::DHCP::NativeMS
       if dhcpsapi.api_level == DhcpsApi::Server::DHCPS_WIN2008_API || dhcpsapi.api_level == DhcpsApi::Server::DHCPS_NONE
         raise Proxy::DHCP::NotImplemented.new("DhcpsApi::Server#get_free_ip_address is not available on Windows Server 2008 and earlier versions.")
       end
-      
+
+      dhcp_range = dhcpsapi.list_subnet_elements(subnet_address, DhcpsApi::DHCP_SUBNET_ELEMENT_TYPE::DhcpIpRanges)
+      dhcp_start_addr = dhcp_range.map {|r| r[:element][:start_address]}.first
+      dhcp_end_addr = dhcp_range.map {|r| r[:element][:end_address]}.first
+
+      if from_address.to_s.empty?
+        from_address = dhcp_start_addr
+      else
+        foreman_start_addr_ip = IPAddr.new(from_address, Socket::AF_INET)
+        dhcp_start_addr_ip = IPAddr.new(dhcp_start_addr, Socket::AF_INET)
+      end
+      if to_address.to_s.empty?
+        to_address = dhcp_end_addr
+      else
+        foreman_end_addr_ip = IPAddr.new(to_address, Socket::AF_INET)
+        dhcp_end_addr_ip = IPAddr.new(dhcp_end_addr, Socket::AF_INET)
+      end
+
+      if foreman_start_addr_ip.to_i > dhcp_end_addr_ip.to_i
+        logger.warn "Start of IP range #{from_address} is out of DHCP range (#{dhcp_start_addr}-#{dhcp_end_addr})"
+        return nil
+      end
+      if foreman_end_addr_ip.to_i < dhcp_start_addr_ip.to_i
+        logger.warn "End of IP range #{to_address} is out of DHCP range (#{dhcp_start_addr}-#{dhcp_end_addr})"
+        return nil
+      end
+
+      if foreman_start_addr_ip.to_i < dhcp_start_addr_ip.to_i
+        logger.debug "Start of IP range #{from_address} is out of DHCP range (#{dhcp_start_addr}-#{dhcp_end_addr}), using #{dhcp_start_addr}"
+        from_address = dhcp_start_addr
+      end
+      if foreman_end_addr_ip.to_i > dhcp_end_addr_ip.to_i
+        logger.debug "End of IP range #{to_address} is out of DHCP range (#{dhcp_start_addr}-#{dhcp_end_addr}), using #{dhcp_end_addr}"
+        to_address = dhcp_end_addr
+      end
+
       logger.debug "Searching for free IP in subnet #{subnet_address}"
       while true
         ip = dhcpsapi.get_free_ip_address(subnet_address, from_address, to_address).first
-        if ip.empty?
+        if ip.nil? || ip.empty?
           logger.warn "No free IP returned by DHCP for subnet #{subnet_address}"
           return nil
         end
-        if icmp_pingable?(ip)
+        if system("ping -n 1 -w 1000 #{ip} > NUL")
           logger.debug "Found a pingable IP address which does not have a DHCP record: #{ip}"
         else
           logger.info "Found free IP #{ip}"
           return ip
         end
+        break if ip == to_address
         found_ip = IPAddr.new(ip, Socket::AF_INET)
         next_ip = IPAddr.new(found_ip.to_i + 1, Socket::AF_INET)
         from_address = next_ip.to_s
-        break if from_address == to_address
       end
       logger.warn "All IPs returned by the DHCP are already in use"
       return nil
