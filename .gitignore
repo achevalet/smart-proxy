@@ -6,6 +6,7 @@ config/migration_state
 config_*/*
 .idea
 /logs
+log/
 *swp
 Gemfile.lock
 bundler.d/*.local.rb
