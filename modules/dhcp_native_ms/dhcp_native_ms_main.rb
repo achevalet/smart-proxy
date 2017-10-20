@@ -1,6 +1,7 @@
 require 'checks'
 require 'open3'
 require 'dhcp_common/server'
+require 'dhcp_common/pingable'
 require 'ipaddr'
 
 module Proxy::DHCP::NativeMS
@@ -79,39 +80,34 @@ module Proxy::DHCP::NativeMS
         raise Proxy::DHCP::NotImplemented.new("DhcpsApi::Server#get_free_ip_address is not available on Windows Server 2008 and earlier versions.")
       end
 
-      dhcp_range = dhcpsapi.list_subnet_elements(subnet_address, DhcpsApi::DHCP_SUBNET_ELEMENT_TYPE::DhcpIpRanges)
+      dhcp_range = dhcpsapi.list_subnet_elements(subnet_address, DhcpsApi::DHCP_SUBNET_ELEMENT_TYPE::DhcpIpRanges) rescue nil
+      if dhcp_range.nil?
+        logger.warn "The specified subnet #{subnet_address} does not exist on the DHCP server"
+        return nil
+      end
       dhcp_start_addr = dhcp_range.map {|r| r[:element][:start_address]}.first
       dhcp_end_addr = dhcp_range.map {|r| r[:element][:end_address]}.first
-
-      if from_address.to_s.empty?
-        from_address = dhcp_start_addr
-      else
-        foreman_start_addr_ip = IPAddr.new(from_address, Socket::AF_INET)
-        dhcp_start_addr_ip = IPAddr.new(dhcp_start_addr, Socket::AF_INET)
-      end
-      if to_address.to_s.empty?
-        to_address = dhcp_end_addr
-      else
-        foreman_end_addr_ip = IPAddr.new(to_address, Socket::AF_INET)
-        dhcp_end_addr_ip = IPAddr.new(dhcp_end_addr, Socket::AF_INET)
-      end
-
-      if foreman_start_addr_ip.to_i > dhcp_end_addr_ip.to_i
-        logger.warn "Start of IP range #{from_address} is out of DHCP range (#{dhcp_start_addr}-#{dhcp_end_addr})"
-        return nil
-      end
-      if foreman_end_addr_ip.to_i < dhcp_start_addr_ip.to_i
-        logger.warn "End of IP range #{to_address} is out of DHCP range (#{dhcp_start_addr}-#{dhcp_end_addr})"
+      if dhcp_start_addr.nil? || dhcp_end_addr.nil?
+        logger.warn "Unable to find IP range on the DHCP server for subnet #{subnet_address}"
         return nil
       end
 
-      if foreman_start_addr_ip.to_i < dhcp_start_addr_ip.to_i
-        logger.debug "Start of IP range #{from_address} is out of DHCP range (#{dhcp_start_addr}-#{dhcp_end_addr}), using #{dhcp_start_addr}"
+      if from_address.nil? || to_address.nil?
         from_address = dhcp_start_addr
-      end
-      if foreman_end_addr_ip.to_i > dhcp_end_addr_ip.to_i
-        logger.debug "End of IP range #{to_address} is out of DHCP range (#{dhcp_start_addr}-#{dhcp_end_addr}), using #{dhcp_end_addr}"
         to_address = dhcp_end_addr
+      else
+        foreman_start_addr_ip = IPAddr.new(from_address)
+        foreman_end_addr_ip = IPAddr.new(to_address)
+        dhcp_start_addr_ip = IPAddr.new(dhcp_start_addr)
+        dhcp_end_addr_ip = IPAddr.new(dhcp_end_addr)
+        if not (dhcp_start_addr_ip..dhcp_end_addr_ip).cover? foreman_start_addr_ip
+          logger.warn "Start of IP range #{from_address} is out of DHCP range (#{dhcp_start_addr}-#{dhcp_end_addr})"
+          return nil
+        end
+        if not (dhcp_start_addr_ip..dhcp_end_addr_ip).cover? foreman_end_addr_ip
+          logger.warn "End of IP range #{to_address} is out of DHCP range (#{dhcp_start_addr}-#{dhcp_end_addr})"
+          return nil
+        end
       end
 
       logger.debug "Searching for free IP in subnet #{subnet_address}"
@@ -121,16 +117,20 @@ module Proxy::DHCP::NativeMS
           logger.warn "No free IP returned by DHCP for subnet #{subnet_address}"
           return nil
         end
-        if system("ping -n 1 -w 1000 #{ip} > NUL")
-          logger.debug "Found a pingable IP address which does not have a DHCP record: #{ip}"
+        msg_pingable_ip = "Found a pingable IP address which does not have a DHCP record: #{ip}"
+        if icmp_pingable?(ip)
+          logger.debug "#{msg_pingable_ip}"
         else
-          logger.info "Found free IP #{ip}"
-          return ip
+          if tcp_pingable?(ip)
+            logger.debug "#{msg_pingable_ip}"
+          else
+            logger.debug "Found free IP #{ip}"
+            return ip
+          end
         end
         break if ip == to_address
-        found_ip = IPAddr.new(ip, Socket::AF_INET)
-        next_ip = IPAddr.new(found_ip.to_i + 1, Socket::AF_INET)
-        from_address = next_ip.to_s
+        found_ip = IPAddr.new(ip)
+        from_address = IPAddr.new(found_ip.to_i + 1, found_ip.family).to_s
       end
       logger.warn "All IPs returned by the DHCP are already in use"
       return nil
