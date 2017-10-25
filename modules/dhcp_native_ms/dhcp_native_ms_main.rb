@@ -220,7 +220,7 @@ module Proxy::DHCP::NativeMS
 
       to_return
     rescue Exception
-      logger.debug("Skipping a reservation as it failed validation: '%s'" % [opts.inspect])
+      logger.debug("Skipping a reservation as it failed validation: '%s'" % [to_return.inspect])
       nil
     end
 
@@ -248,7 +248,7 @@ module Proxy::DHCP::NativeMS
       logger.debug to_return.inspect
       to_return
     rescue Exception
-      logger.debug("Skipping a lease as it failed validation: '%s'" % [opts.inspect])
+      logger.debug("Skipping a lease as it failed validation: '%s'" % [to_return.inspect])
       nil
     end
 
