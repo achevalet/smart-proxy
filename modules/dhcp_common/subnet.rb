@@ -3,8 +3,6 @@ require 'ipaddr'
 require 'dhcp_common/monkey_patches' unless IPAddr.new.respond_to?('to_range')
 require 'dhcp_common/monkey_patch_subnet' unless Array.new.respond_to?('rotate')
 require 'proxy/validations'
-require 'socket'
-require 'timeout'
 require 'tmpdir'
 require 'dhcp_common/pingable'
 
@@ -16,6 +14,7 @@ module Proxy::DHCP
     include Proxy::DHCP
     include Proxy::Log
     include Proxy::Validations
+    include Proxy::DHCP::Pingable
 
     def initialize network, netmask, options = {}
       @network = validate_ip network

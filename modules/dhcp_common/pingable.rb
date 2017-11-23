@@ -1,7 +1,7 @@
 require 'timeout'
 require 'socket'
 
-module Proxy::DHCP
+module Proxy::DHCP::Pingable
   def tcp_pingable? ip
     # This code is from net-ping, and stripped down for use here
     # We don't need all the ldap dependencies net-ping brings in

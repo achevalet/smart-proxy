@@ -1,7 +1,6 @@
 require 'checks'
 require 'open3'
 require 'dhcp_common/server'
-require 'dhcp_common/pingable'
 require 'ipaddr'
 
 module Proxy::DHCP::NativeMS
@@ -112,21 +111,17 @@ module Proxy::DHCP::NativeMS
 
       logger.debug "Searching for free IP in subnet #{subnet_address}"
       while true
-        ip = dhcpsapi.get_free_ip_address(subnet_address, from_address, to_address).first
+        ip_array = dhcpsapi.get_free_ip_address(subnet_address, from_address, to_address)
+        ip = ip_array.first unless ip_array.nil?
         if ip.nil? || ip.empty?
           logger.warn "No free IP returned by DHCP for subnet #{subnet_address}"
           return nil
         end
-        msg_pingable_ip = "Found a pingable IP address which does not have a DHCP record: #{ip}"
         if icmp_pingable?(ip)
-          logger.debug "#{msg_pingable_ip}"
+          logger.debug "Found a pingable IP address which does not have a DHCP record: #{ip}"
         else
-          if tcp_pingable?(ip)
-            logger.debug "#{msg_pingable_ip}"
-          else
-            logger.debug "Found free IP #{ip}"
-            return ip
-          end
+          logger.debug "Found free IP #{ip}"
+          return ip
         end
         break if ip == to_address
         found_ip = IPAddr.new(ip)
